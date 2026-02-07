@@ -20,9 +20,13 @@ int main(int argc, char **argv) {
 
     mcsv_manager::SystemdBus bus;
     mcsv_manager::HttpServer server(STDIN_FILENO);
+
+    mcsv_manager::McSvMgr manager(bus);
     
+    ctx.verbose = verbose;
     ctx.systemd_bus = &bus;
     ctx.server = &server;
+    ctx.manager = &manager;
 
     server.run(ctx);
 

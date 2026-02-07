@@ -3,6 +3,7 @@
 addgroup --system mcsv-mgr
 adduser --system --ingroup mcsv-mgr mcsv-mgr
 usermod -aG mcsv-mgr www-data
+adduser --system --ingroup mcsv-mgr mcsv
 
 cat <<EOF > /etc/apache2/sites-available/mcsv_manager.conf
 <VirtualHost *:80>
@@ -62,4 +63,23 @@ ReadWritePaths=/run
 
 [Install]
 WantedBy=multi-user.target
+EOF
+
+cat <<EOF > /etc/tmpfiles.d/minecraft.conf
+# Type Path                       Mode UID      GID       Age Argument
+d    /run/minecraft               0755 mcsv-mgr mcsv-mgr  -
+EOF
+
+cat <<EOF > /etc/systemd/system/minecraft@.socket
+[Unit]
+Description=Minecraft stdin socket for %i
+
+[Socket]
+ListenFIFO=/run/minecraft/%i.stdin
+SocketUser=mcsv
+SocketGroup=mcsv-mgr
+SocketMode=0660
+
+[Install]
+WantedBy=sockets.target
 EOF

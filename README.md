@@ -15,14 +15,14 @@ cmake --build build
 Installation
 - install the binary
 ```bash
-cmake --install build
+sudo cmake --install build
 ```
 
 Basic setup
 - setup user & group for safety
 - install apache config file, systemd service and socket
 ```bash
-bash setup.sh
+sudo bash setup.sh
 ```
 
 ## Contributing

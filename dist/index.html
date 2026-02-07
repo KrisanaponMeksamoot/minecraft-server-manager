@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>Test Minecraft Server</title>
+</head>
+<body>
+    <h1>Test Minecraft Server</h1>
+    Memory: <div class="bar">
+        <div class="fill"></div>
+        <div class="label">unknown</div>
+    </div>
+
+    <script>
+function fmtKiBytes(v) {
+  const u = ["KiB", "MiB", "GiB"];
+  let i = 0;
+
+  while (v >= 1024 && i < u.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(i ? 1 : 0)} ${u[i]}`;
+}
+
+async function reload() {
+  let res = await fetch("/api/mcsv_manager/status");
+  let { MemAvailable, MemTotal } = await res.json();
+
+  let mem_used = MemTotal - MemAvailable;
+  let value = mem_used * 100 / MemTotal;
+
+  const bar = document.querySelector(".bar");
+  const fill = document.querySelector(".fill");
+  const label = document.querySelector(".label");
+
+  bar.style.setProperty("--p", value + "%");
+  label.textContent = `${value | 0}% ${fmtKiBytes(mem_used)} / ${fmtKiBytes(MemTotal)}`;
+
+  fill.style.background =
+    value < 60 ? "#4caf50" :   // green
+    value < 80 ? "#ff9800" :   // orange
+                 "#f44336";    // red
+}
+
+async function init() {
+    let ul = document.createElement("ul");
+    let res = await fetch("/api/mcsv_manager/servers");
+    for (let name of await res.json()) {
+        let li = document.createElement("li");
+        li.appendChild(document.createTextNode(name));
+        ul.appendChild(li);
+    }
+    document.body.appendChild(ul);
+}
+
+init();
+reload();
+setInterval(reload, 5000);
+    </script>
+    <style>
+        .bar {
+        --p: 0%;
+        position: relative;
+        width: 300px;
+        height: 32px;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        overflow: hidden;
+        }
+
+        .fill {
+        position: absolute;
+        inset: 0;
+        width: var(--p);
+        background: #4caf50;
+        transition: width 0.3s ease, background-color 0.3s ease;
+        }
+
+        .label {
+        position: relative;
+        text-align: center;
+        line-height: 32px;
+        font-weight: 600;
+        }
+
+    </style>
+</body>
+
+</html>

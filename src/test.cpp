@@ -20,11 +20,13 @@ int main(int argc, char **argv) {
 
     mcsv_manager::SystemdBus bus;
     mcsv_manager::HttpServer server(0);
+    mcsv_manager::McSvMgr manager(bus);
     
     mcsv_manager::Context ctx;
 
     ctx.systemd_bus = &bus;
     ctx.server = &server;
+    ctx.manager = &manager;
 
     const static std::set<std::string> list_meminfo{
         "MemTotal",
@@ -49,7 +51,15 @@ int main(int argc, char **argv) {
 
     std::cout << res.dump() << std::endl;
 
-    auto ps = bus.callGetUnitProcesses("apache2.service");
+    std::cout << "mcsv_manager.service" << std::endl;
+    auto ps = bus.callGetUnitProcesses("mcsv_manager.service");
     for (auto p : ps)
         std::cout << p.control_group << ' ' << p.pid << ' ' << p.cmd_line << std::endl;
+    
+    std::cout << "instances:" << std::endl;
+    for (auto name : manager.list()) {
+        std::cout << name << std::endl;
+    }
+
+    return 0;
 }
