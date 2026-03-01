@@ -1,0 +1,46 @@
+[Unit]
+Description=Minecraft Server %i
+After=network.target
+Wants=network.target
+Requires=minecraft@%i.socket
+
+[Service]
+Type=simple
+User=mcsv
+Group=mcsv-mgr
+
+WorkingDirectory=/srv/minecraft/instances/%i
+
+ExecStart=/lib/jvm/java-21-openjdk-amd64/bin/java \
+  -Xms2G -Xmx6G \
+  -Djava.library.path=libraries \
+  -Dsun.java.command="minecraft@%i" \
+  -jar server.jar \
+  nogui
+
+# stdin control
+StandardInput=socket
+
+# logging
+StandardOutput=journal
+StandardError=journal
+
+Restart=none
+
+# CLEAN SHUTDOWN
+ExecStop=/bin/sh -c 'printf "stop\n" > /run/minecraft/%i.stdin'
+TimeoutStopSec=90
+KillSignal=SIGCONT
+KillMode=mixed
+SuccessExitStatus=0
+
+# safety
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+ReadWritePaths=/srv/minecraft/instances/%i
+
+[Install]
+WantedBy=multi-user.target
