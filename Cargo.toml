@@ -1,6 +1,16 @@
 [package]
-name = "minecraft-server-manager"
+name = "mcsv_manager"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+axum = { version = "0.8.8", features = ["ws"] }
+futures-util = "0.3.32"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sysinfo = "0.38.2"
+systemd = "0.10.1"
+thiserror = "2.0.18"
+tokio = { version = "1.49.0", features = ["full"] }
+tower-http = { version = "0.6.8", features = ["trace"] }
+zbus = "5.14.0"

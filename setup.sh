@@ -13,6 +13,7 @@ mkdir -p /srv/minecraft/{instances,shared}
 chown -R mcsv-mgr:mcsv-mgr /srv/minecraft
 chmod -R 2775 /srv/minecraft
 
+mkdir -p /etc/apache2/conf-available/main-site-parts
 cat <<EOF > /etc/apache2/conf-available/main-site-parts/mcsv_manager.conf
 <Location "/api/mcsv_manager/">
     ProxyPreserveHost On
@@ -21,7 +22,7 @@ cat <<EOF > /etc/apache2/conf-available/main-site-parts/mcsv_manager.conf
     # --- WebSocket Support ---
     RewriteCond %{HTTP:Upgrade} websocket [NC]
     RewriteCond %{HTTP:Connection} upgrade [NC]
-    RewriteRule ^(.*)$ unix:/run/mcsv_manager.sock|ws://a/$1 [P,L]
+    RewriteRule ^/api/mcsv_manager/(.*)$ unix:/run/mcsv_manager.sock|ws://a/$1 [P,L]
 
     RewriteCond %{LA-U:REMOTE_USER} (.+)
     RewriteRule . - [E=RU:%1]
@@ -58,6 +59,8 @@ Group=mcsv-mgr
 
 ExecStart=/usr/local/bin/mcsv_manager
 Restart=on-failure
+
+ExecReload=/bin/kill -HUP \$MAINPID
 
 StandardOutput=journal
 StandardError=journal

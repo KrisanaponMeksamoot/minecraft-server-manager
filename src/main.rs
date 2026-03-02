@@ -1,3 +1,68 @@
-fn main() {
-    println!("Hello, world!");
+use axum::{
+    routing::get,
+    Router
+};
+use std::{os::unix::io::FromRawFd, sync::Arc};
+use tokio::{net::UnixListener, signal::unix::{SignalKind, signal}, sync::Mutex};
+
+mod handlers;
+mod systemd1;
+mod mcsv_mgr;
+use systemd1::{Systemd1};
+
+use crate::mcsv_mgr::McsvManager;
+
+#[derive(Debug, Clone)]
+pub struct AppState {
+    pub dbus: Arc<Systemd1>,
+    pub mcsv_mgr: Arc<Mutex<McsvManager>>
+}
+
+#[tokio::main]
+async fn main() {
+    let dbus = Arc::new(Systemd1::new().await.unwrap());
+    let app_state = Arc::new(AppState {
+        dbus: dbus.clone(),
+        mcsv_mgr: Arc::new(Mutex::new(McsvManager::new(dbus.clone())))
+    });
+
+    let signal_state = app_state.clone();
+    tokio::spawn(async move {
+        handle_signals(signal_state).await;
+    });
+
+    app_state.mcsv_mgr.lock().await.update().await.unwrap();
+
+    let app = Router::new()
+        .route("/status", get(handlers::get_status))
+        .route("/servers", get(handlers::list_servers))
+        .route("/server/{id}/status", get(handlers::get_server_status))
+        .route("/server/{id}/console", get(handlers::handle_server_console))
+        .route("/server/{id}/{action}", get(handlers::handle_server_action))
+        .with_state(app_state.clone());
+
+    let std_listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(0) };
+    std_listener.set_nonblocking(true).unwrap();
+    let listener = UnixListener::from_std(std_listener).unwrap();
+
+    println!("Minecraft Server Manager listening on Systemd socket...");
+
+    axum::serve(
+        listener, 
+        app.into_make_service()
+    ).await.unwrap();
+}
+
+async fn handle_signals(state: Arc<AppState>) {
+    // Create a listener for SIGHUP
+    let mut reload_signal = signal(SignalKind::hangup()).unwrap();
+
+    loop {
+        reload_signal.recv().await;
+        println!("Received SIGHUP: Reloading configuration...");
+
+        state.mcsv_mgr.lock().await.update().await.unwrap();
+        
+        println!("Reload complete.");
+    }
 }
