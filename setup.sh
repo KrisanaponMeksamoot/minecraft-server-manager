@@ -5,6 +5,7 @@ set -e
 addgroup --system mcsv-mgr
 adduser --system --ingroup mcsv-mgr --no-create-home mcsv-mgr
 adduser --system --ingroup mcsv-mgr --no-create-home mcsv
+usemod -aG adm mcsv-mgr
 
 # Allow Apache (www-data) to write to the Unix Socket
 usermod -aG mcsv-mgr www-data

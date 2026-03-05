@@ -9,7 +9,7 @@ use crate::systemd1::UnitStatus;
 pub struct LogLine {
     pub message: String,
     pub priority: String,
-    // timestamp: u64,
+    timestamp: i64
 }
 
 #[derive(Debug)]
@@ -21,10 +21,9 @@ pub struct JournalBroadcaster {
 
 impl JournalBroadcaster {
     pub fn new(unit_name: String, name: String) -> Arc<Self> {
-        let (tx, _) = broadcast::channel(1024); // Buffer up to 1024 lines
+        let (tx, _) = broadcast::channel(1024);
         let c_tx = tx.clone();
 
-        // Spawn the dedicated blocking thread for the Journal
         let unit_for_thread = unit_name.clone();
         let name_for_thread = name.clone();
         let handle = std::thread::spawn(move || {
@@ -33,32 +32,36 @@ impl JournalBroadcaster {
                         .system(true)
                         .local_only(true)
                         .open()?;
-                // let mut j = Journal::open(systemd::JournalFiles::System, false, false).unwrap();
-                // println!("Journal thread for {} started : {}", &name_for_thread, &unit_for_thread);
-                j.match_add("UNIT", unit_for_thread)?;
+                println!("Journal thread for {} started : {}", &name_for_thread, &unit_for_thread);
+                j.match_add("_SYSTEMD_UNIT", unit_for_thread)?;
                 j.seek(JournalSeek::Tail)?;
 
                 loop {
-                    match j.await_next_entry(None)? {
-                        Some(entry) => {
-                            let line = LogLine {
-                                message: entry.get("MESSAGE").cloned().unwrap_or_default(),
-                                priority: entry.get("PRIORITY").cloned().unwrap_or_else(|| "6".to_string()),
-                                // timestamp: entry.timestamp().unwrap_or(0),
-                            };
-                            // println!("log from {} : {}", &name_for_thread, &line.message);
-                            let _ = tx.send(line);
+                    match j.wait(None)? {
+                        systemd::JournalWaitResult::Invalidate => {
+                            println!("Journal invalidated for {}, re-seeking...", &name_for_thread);
+                            j.seek(JournalSeek::Tail)?;
+                            let _ = j.previous();
+                            continue;
                         }
-                        None => {
-                            // Wait for systemd to signal new data (blocking)
-                            let _ = j.wait(None); 
+                        _ => {
+                            while let Some(entry) = j.next_entry()? {
+                                let line = LogLine {
+                                    message: entry.get("MESSAGE").cloned().unwrap_or_default(),
+                                    priority: entry.get("PRIORITY").cloned().unwrap_or_else(|| "6".to_string()),
+                                    timestamp: entry.get("__REALTIME_TIMESTAMP").cloned().map_or(-1, |s| s.parse().unwrap_or(-1))
+                                };
+                                // println!("log from {} : {}", &name_for_thread, &line.message);
+                                let _ = tx.send(line);
+                            }
                         }
                     }
-                }
+                };
             };
             if let Err(e) = run() {
                 eprintln!("Journal thread for {} died: {}", &name_for_thread, e);
             }
+            // println!("Journal thread for {} died", &name_for_thread);
         });
 
         Arc::new(Self { name: name, tx: c_tx, handle: handle })
