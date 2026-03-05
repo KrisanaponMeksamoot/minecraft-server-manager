@@ -1,5 +1,5 @@
 use std::{collections::HashMap, path::Path, sync::Arc, thread::JoinHandle};
-use tokio::{fs, sync::broadcast};
+use tokio::{fs, io::AsyncWriteExt, sync::broadcast};
 use systemd::{journal::{JournalSeek, OpenOptions}};
 
 use crate::systemd1::UnitStatus;
@@ -9,7 +9,9 @@ use crate::systemd1::UnitStatus;
 pub struct LogLine {
     pub message: String,
     pub priority: String,
-    timestamp: i64
+    pub timestamp: i64,
+    pub command: String,
+    pub pid: i64
 }
 
 #[derive(Debug)]
@@ -49,7 +51,9 @@ impl JournalBroadcaster {
                                 let line = LogLine {
                                     message: entry.get("MESSAGE").cloned().unwrap_or_default(),
                                     priority: entry.get("PRIORITY").cloned().unwrap_or_else(|| "6".to_string()),
-                                    timestamp: entry.get("__REALTIME_TIMESTAMP").cloned().map_or(-1, |s| s.parse().unwrap_or(-1))
+                                    timestamp: entry.get("__REALTIME_TIMESTAMP").cloned().map_or(-1, |s| s.parse().unwrap_or(-1)),
+                                    command:  entry.get("_COMM").cloned().unwrap_or_default(),
+                                    pid: entry.get("_PID").cloned().map_or(-1, |s| s.parse().unwrap_or(-1))
                                 };
                                 // println!("log from {} : {}", &name_for_thread, &line.message);
                                 let _ = tx.send(line);
@@ -127,7 +131,9 @@ impl McsvManager {
     }
 
     pub async fn inject_command(self: &Self, name: &str, cmd: &str) -> Result<(), std::io::Error> {
-        fs::write(Path::new("/run/minecraft/").join(format!("{}.stdin", name)), cmd).await?;
+        let mut file = fs::OpenOptions::new().write(true).create(false)
+                .open(Path::new("/run/minecraft/").join(format!("{}.stdin", name))).await?;
+        file.write_all(cmd.as_bytes()).await?;
         Ok(())
     }
 

@@ -10,6 +10,7 @@ use axum::{
 };
 use thiserror::Error;
 use serde_json::{Value, json};
+use tokio::sync::Mutex;
 
 use crate::{AppState, mcsv_mgr::{JournalBroadcaster}};
 
@@ -143,16 +144,26 @@ pub async fn handle_server_console(Path(id): Path<String>, state: State<Arc<AppS
 }
 
 pub async fn handle_server_console_socket(socket: WebSocket, state: Arc<AppState>, jb: Arc<JournalBroadcaster>) {
-    let (mut sender, mut receiver) = socket.split();
+    let (sender, mut receiver) = socket.split();
     let mut rx = jb.tx.subscribe();
+    let sender = Arc::new(Mutex::new(sender));
 
+    let sender0 = sender.clone();
     let mut send_task = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
-            let res = sender.send(Message::Text(msg.message.into())).await;
+        while let Ok(logline) = rx.recv().await {
+            let msg = json!({
+                "type": "log",
+                "message": logline.message,
+                "comm": logline.command,
+                "pid": logline.pid
+            });
+            let msg = serde_json::to_string(&msg);
+            let msg = if let Ok(msg) = msg { msg } else { break; };
+            let res = sender0.lock().await.send(Message::Text(msg.into())).await;
             if res.is_err() {
                 break;
             }
-        }
+        };
     });
 
     let name = jb.name.clone();
@@ -163,7 +174,18 @@ pub async fn handle_server_console_socket(socket: WebSocket, state: Arc<AppState
             
             let res = state.mcsv_mgr.lock().await.inject_command(&name, &cmd).await;
             if let Err(e) = res {
-                eprintln!("Failed to inject command: {}", e);
+                let msg = format!("Failed to inject command: {}", e);
+                eprintln!("{}", &msg);
+                let msg = json!({
+                    "type": "error",
+                    "message": msg
+                });
+                let msg = serde_json::to_string(&msg);
+                let msg = if let Ok(msg) = msg { msg } else { break; };
+                let res = sender.lock().await.send(Message::Text(msg.into())).await;
+                if res.is_err() {
+                    break;
+                }
             }
         }
     });
