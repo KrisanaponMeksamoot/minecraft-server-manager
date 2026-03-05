@@ -92,12 +92,15 @@ EOF
 cat <<EOF > /etc/systemd/system/minecraft@.socket
 [Unit]
 Description=Minecraft stdin socket for %i
+PartOf=minecraft@%i.service
 
 [Socket]
 ListenFIFO=/run/minecraft/%i.stdin
 SocketUser=mcsv
 SocketGroup=mcsv-mgr
 SocketMode=0660
+
+RemoveOnStop=on
 
 [Install]
 WantedBy=sockets.target
