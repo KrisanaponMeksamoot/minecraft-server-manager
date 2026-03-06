@@ -1,21 +1,34 @@
-use std::{collections::HashMap, path::Path, sync::Arc, thread::JoinHandle};
+use std::{collections::{BTreeMap, HashMap}, path::Path, sync::Arc, thread::JoinHandle};
 use tokio::{fs, io::AsyncWriteExt, sync::broadcast};
-use systemd::{journal::{JournalSeek, OpenOptions}};
+use systemd::{journal::{OpenOptions}};
 
-use crate::systemd1::UnitStatus;
+use crate::systemd1::{Process, UnitStatus};
 
 // The message we'll send over the broadcast channel
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct LogLine {
     pub message: String,
     pub priority: String,
-    pub timestamp: i64,
+    pub timestamp: u64,
     pub command: String,
     pub pid: i64
 }
 
+impl LogLine {
+    pub fn from_journal_entry(entry: &BTreeMap<String, String>, timestamp: u64) -> Self {
+        Self {
+            message: entry.get("MESSAGE").cloned().unwrap_or_default(),
+            priority: entry.get("PRIORITY").cloned().unwrap_or_else(|| "6".to_string()),
+            timestamp,
+            command:  entry.get("_COMM").cloned().unwrap_or_default(),
+            pid: entry.get("_PID").cloned().map_or(-1, |s| s.parse().unwrap_or(-1))
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct JournalBroadcaster {
+    pub unit_name: String,
     pub name: String,
     pub tx: broadcast::Sender<LogLine>,
     pub handle: JoinHandle<()>
@@ -36,25 +49,20 @@ impl JournalBroadcaster {
                         .open()?;
                 println!("Journal thread for {} started : {}", &name_for_thread, &unit_for_thread);
                 j.match_add("_SYSTEMD_UNIT", unit_for_thread)?;
-                j.seek(JournalSeek::Tail)?;
+                j.seek_tail()?;
+                let _ = j.previous();
 
                 loop {
                     match j.wait(None)? {
                         systemd::JournalWaitResult::Invalidate => {
                             println!("Journal invalidated for {}, re-seeking...", &name_for_thread);
-                            j.seek(JournalSeek::Tail)?;
+                            j.seek_tail()?;
                             let _ = j.previous();
                             continue;
                         }
                         _ => {
                             while let Some(entry) = j.next_entry()? {
-                                let line = LogLine {
-                                    message: entry.get("MESSAGE").cloned().unwrap_or_default(),
-                                    priority: entry.get("PRIORITY").cloned().unwrap_or_else(|| "6".to_string()),
-                                    timestamp: entry.get("__REALTIME_TIMESTAMP").cloned().map_or(-1, |s| s.parse().unwrap_or(-1)),
-                                    command:  entry.get("_COMM").cloned().unwrap_or_default(),
-                                    pid: entry.get("_PID").cloned().map_or(-1, |s| s.parse().unwrap_or(-1))
-                                };
+                                let line = LogLine::from_journal_entry(&entry, j.timestamp_usec()?);
                                 // println!("log from {} : {}", &name_for_thread, &line.message);
                                 let _ = tx.send(line);
                             }
@@ -68,7 +76,51 @@ impl JournalBroadcaster {
             // println!("Journal thread for {} died", &name_for_thread);
         });
 
-        Arc::new(Self { name: name, tx: c_tx, handle: handle })
+        Arc::new(Self { unit_name,  name, tx: c_tx, handle })
+    }
+
+    pub fn get_logs(self: &Self, since: u64, until: Option<u64>) -> Result<Vec<LogLine>, std::io::Error> {
+        let mut j = OpenOptions::default()
+                .system(true)
+                .local_only(true)
+                .open()?;
+        j.match_add("_SYSTEMD_UNIT", self.name.clone())?;
+        j.seek_realtime_usec(since)?;
+        let mut out = Vec::new();
+        while let Some(entry) = j.next_entry()? {
+            let line = LogLine::from_journal_entry(&entry, j.timestamp_usec()?);
+            if let Some(until) = until && line.timestamp > until { break; }
+            out.push(line);
+        };
+        Ok(out)
+    }
+
+    pub fn get_logs_to(
+        &self,
+        since: u64,
+        until: Option<u64>,
+        tx: tokio::sync::mpsc::Sender<LogLine>,
+    ) -> Result<(), std::io::Error> {
+        let mut j = OpenOptions::default().system(true).local_only(true).open()?;
+        j.match_add("_SYSTEMD_UNIT", self.unit_name.clone())?;
+        j.seek_realtime_usec(since)?;
+
+        while let Some(entry) = j.next_entry()? {
+            let timestamp = j.timestamp_usec()?;
+
+            if let Some(u) = until {
+                if timestamp > u { break; }
+            }
+
+            let line = LogLine::from_journal_entry(&entry, timestamp);
+
+            // blocking_send transfers the data to the async side. 
+            // If the receiver is closed (user refreshed), this returns an error.
+            if tx.blocking_send(line).is_err() {
+                break; 
+            }
+        }
+        Ok(())
     }
 }
 
@@ -110,6 +162,12 @@ impl McsvManager {
         let name = format!("minecraft@{}.service", name);
         let units = self.dbus.list_units_by_names(&vec![&name]).await?;
         Ok(if units.len() < 1 { None } else { Some(units[0].clone()) } )
+    }
+
+    pub async fn get_server_process(self: &Self, name: &str) -> Result<Option<Process>, zbus::Error> {
+        let name = format!("minecraft@{}.service", name);
+        let procs = self.dbus.get_unit_processes(&name).await?;
+        Ok(if procs.len() < 1 { None } else { Some(procs[0].clone()) } )
     }
 
     pub async fn start_server(self: &Self, name: &str) -> Result<(), zbus::Error> {

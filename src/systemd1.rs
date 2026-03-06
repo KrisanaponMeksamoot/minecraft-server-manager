@@ -24,10 +24,17 @@ pub struct UnitStatus {
     pub job_path: zbus::zvariant::OwnedObjectPath,
 }
 
-#[derive(Debug, Serialize, Deserialize, zbus::zvariant::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, zbus::zvariant::Type)]
 pub struct UnitFile {
     pub path: String,
     pub state: String
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, zbus::zvariant::Type)]
+pub struct Process {
+    pub control_group: String,
+    pub pid: u32,
+    pub cmd_line: String
 }
 
 impl Systemd1 {
@@ -64,5 +71,9 @@ impl Systemd1 {
 
     pub async fn restart_unit(&self, name: &str, mode: &str) -> Result<zbus::zvariant::OwnedObjectPath> {
         Ok(self.proxy.call("RestartUnit", &(name, mode)).await?)
+    }
+
+    pub async fn get_unit_processes(&self, name: &str) -> Result<Vec<Process>> {
+        Ok(self.proxy.call("GetUnitProcesses", &(name)).await?)
     }
 }

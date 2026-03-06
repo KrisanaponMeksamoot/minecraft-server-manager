@@ -1,7 +1,7 @@
-use std::{error::Error, fmt, ops::{IndexMut}, sync::Arc};
+use std::{error::Error, fmt, ops::{Index, IndexMut}, sync::Arc};
 
 use futures_util::{SinkExt, StreamExt};
-use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
+use sysinfo::{CpuRefreshKind, MemoryRefreshKind, Pid, ProcessRefreshKind, RefreshKind, System};
 
 use axum::{
     Json, extract::{Path, State, ws::{Message, WebSocket, WebSocketUpgrade}},
@@ -133,7 +133,6 @@ pub async fn handle_server_action(
 }
 
 pub async fn handle_server_console(Path(id): Path<String>, state: State<Arc<AppState>>, ws: WebSocketUpgrade) -> Result<impl axum::response::IntoResponse, AppError> {
-    let state = state.0;
     // println!("connecting to {}", id);
     let jb = {
         let mcsv_mgr = state.mcsv_mgr.lock().await;
@@ -143,39 +142,19 @@ pub async fn handle_server_console(Path(id): Path<String>, state: State<Arc<AppS
     Ok(ws.on_upgrade(|s| handle_server_console_socket(s, state, jb)))
 }
 
-pub async fn handle_server_console_socket(socket: WebSocket, state: Arc<AppState>, jb: Arc<JournalBroadcaster>) {
+pub async fn handle_server_console_socket(socket: WebSocket, state: State<Arc<AppState>>, jb: Arc<JournalBroadcaster>) {
     let (sender, mut receiver) = socket.split();
     let mut rx = jb.tx.subscribe();
     let sender = Arc::new(Mutex::new(sender));
 
     let sender0 = sender.clone();
-    let mut send_task = tokio::spawn(async move {
-        while let Ok(logline) = rx.recv().await {
-            let msg = json!({
-                "type": "log",
-                "message": logline.message,
-                "comm": logline.command,
-                "pid": logline.pid
-            });
-            let msg = serde_json::to_string(&msg);
-            let msg = if let Ok(msg) = msg { msg } else { break; };
-            let res = sender0.lock().await.send(Message::Text(msg.into())).await;
-            if res.is_err() {
-                break;
-            }
-        };
-    });
 
     let name = jb.name.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(Message::Text(text))) = receiver.next().await {
-            println!("Received command for {}: {}", name, text);
-            let cmd = if !text.ends_with('\n') { text.to_string() + "\n" } else { text.to_string() };
-            
-            let res = state.mcsv_mgr.lock().await.inject_command(&name, &cmd).await;
-            if let Err(e) = res {
-                let msg = format!("Failed to inject command: {}", e);
-                eprintln!("{}", &msg);
+            let inmsg = serde_json::from_str(text.as_str());
+            let inmsg: Value = if let Ok(inmsg) = inmsg { inmsg } else { 
+                let msg = format!("Invalid json: {}", text.as_str());
                 let msg = json!({
                     "type": "error",
                     "message": msg
@@ -186,8 +165,133 @@ pub async fn handle_server_console_socket(socket: WebSocket, state: Arc<AppState
                 if res.is_err() {
                     break;
                 }
-            }
+                continue;
+            };
+
+            match inmsg.index("type").as_str() {
+                Some("command") => {
+                    let cmd = inmsg.index("command").as_str().unwrap_or("");
+                    println!("Received command for {}: {}", name, cmd);
+                    let cmd = if !cmd.ends_with('\n') { cmd.to_string() + "\n" } else { cmd.to_string() };
+                    
+                    let res = state.mcsv_mgr.lock().await.inject_command(&name, &cmd).await;
+                    if let Err(e) = res {
+                        let msg = format!("Failed to inject command: {}", e);
+                        eprintln!("{}", &msg);
+                        let msg = json!({
+                            "type": "error",
+                            "message": msg
+                        });
+                        let msg = serde_json::to_string(&msg);
+                        let msg = if let Ok(msg) = msg { msg } else { break; };
+                        let res = sender.lock().await.send(Message::Text(msg.into())).await;
+                        if res.is_err() {
+                            break;
+                        }
+                    }
+                },
+                Some("status_global") => {
+                    let out = get_status().await;
+                    let msg = json!({
+                        "type": "status_global",
+                        "status_global": out.0
+                    });
+                    let msg = serde_json::to_string(&msg);
+                    let msg = if let Ok(msg) = msg { msg } else { break; };
+                    let res = sender.lock().await.send(Message::Text(msg.into())).await;
+                    if res.is_err() {
+                        break;
+                    }
+                },
+                Some("status_mcsv") => {
+                    let unit = state.mcsv_mgr.lock().await.get_server_unit_status(&jb.name).await;
+                    let unit = if let Ok(Some(unit)) = unit { unit } else { break; };
+                    
+                    let mut msg = json!({
+                        "type": "status_mcsv"
+                    });
+                    *msg.index_mut("unit") = json!({
+                        "name": unit.name,
+                        "load_state": unit.load_state,
+                        "active_state": unit.active_state,
+                        "sub_state": unit.sub_state
+                    });
+                    let proc = state.mcsv_mgr.lock().await.get_server_process(&jb.name).await;
+                    
+                    if let Ok(Some(proc)) = proc {
+                        *msg.index_mut("stat") = json!({
+                            "pid": proc.pid
+                        });
+                        let mut system = System::new_with_specifics(RefreshKind::nothing()
+                                .with_processes(ProcessRefreshKind::everything()));
+                        system.refresh_all();
+                        if let Some(proc) = system.process(Pid::from_u32(proc.pid)) {
+                            let stat = msg.index_mut("stat");
+                            *stat.index_mut("name") = Value::String(proc.name().to_string_lossy().into_owned());
+                            *stat.index_mut("cpu_usage") = json!(proc.cpu_usage());
+                            *stat.index_mut("memory") = json!(proc.memory());
+                            *stat.index_mut("start_time") = json!(proc.start_time());
+                            *stat.index_mut("run_time") = json!(proc.run_time());
+                        }
+                    }
+                    let msg = serde_json::to_string(&msg);
+                    let msg = if let Ok(msg) = msg { msg } else { break; };
+                    let res = sender.lock().await.send(Message::Text(msg.into())).await;
+                    if res.is_err() {
+                        break;
+                    }
+                },
+                Some("get_logs") => {
+                    let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(100);
+
+                    let jb_clone = jb.clone();
+                    let since = inmsg.index("since").as_u64().unwrap_or_default();
+                    let until = inmsg.get("until").and_then(|v| v.as_u64());
+
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = jb_clone.get_logs_to(since, until, log_tx) {
+                            eprintln!("Log streaming error: {}", e);
+                        }
+                    });
+
+                    while let Some(logline) = log_rx.recv().await {
+                        let msg = json!({
+                            "type": "log",
+                            "message": logline.message,
+                            "timestamp": logline.timestamp,
+                            "comm": logline.command,
+                            "pid": logline.pid
+                        });
+
+                        if let Ok(serialized) = serde_json::to_string(&msg) {
+                            let mut guard = sender.lock().await;
+                            if guard.send(Message::Text(serialized.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            };
         }
+    });
+
+    let mut send_task = tokio::spawn(async move {
+        while let Ok(logline) = rx.recv().await {
+            let msg = json!({
+                "type": "log",
+                "message": logline.message,
+                "comm": logline.command,
+                "pid": logline.pid,
+                "timestamp": logline.timestamp
+            });
+            let msg = serde_json::to_string(&msg);
+            let msg = if let Ok(msg) = msg { msg } else { break; };
+            let res = sender0.lock().await.send(Message::Text(msg.into())).await;
+            if res.is_err() {
+                break;
+            }
+        };
     });
     // println!("connected to {}", &jb.name);
 
