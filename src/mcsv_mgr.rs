@@ -99,17 +99,22 @@ impl JournalBroadcaster {
         &self,
         since: u64,
         until: Option<u64>,
+        max_lines: Option<u64>,
         tx: tokio::sync::mpsc::Sender<LogLine>,
     ) -> Result<(), std::io::Error> {
         let mut j = OpenOptions::default().system(true).local_only(true).open()?;
         j.match_add("_SYSTEMD_UNIT", self.unit_name.clone())?;
         j.seek_realtime_usec(since)?;
 
+        let mut line_count = 0;
         while let Some(entry) = j.next_entry()? {
             let timestamp = j.timestamp_usec()?;
 
-            if let Some(u) = until {
-                if timestamp > u { break; }
+            if let Some(until) = until {
+                if timestamp > until { break; }
+            }
+            if let Some(max_lines) = max_lines {
+                if line_count > max_lines { break; }
             }
 
             let line = LogLine::from_journal_entry(&entry, timestamp);
@@ -119,6 +124,41 @@ impl JournalBroadcaster {
             if tx.blocking_send(line).is_err() {
                 break; 
             }
+            line_count += 1;
+        }
+        Ok(())
+    }
+
+    pub fn get_rlogs_to(
+        &self,
+        since: Option<u64>,
+        until: u64,
+        max_lines: Option<u64>,
+        tx: tokio::sync::mpsc::Sender<LogLine>,
+    ) -> Result<(), std::io::Error> {
+        let mut j = OpenOptions::default().system(true).local_only(true).open()?;
+        j.match_add("_SYSTEMD_UNIT", self.unit_name.clone())?;
+        j.seek_realtime_usec(until)?;
+
+        let mut line_count = 0;
+        while let Some(entry) = j.previous_entry()? {
+            let timestamp = j.timestamp_usec()?;
+
+            if let Some(since) = since {
+                if timestamp < since { break; }
+            }
+            if let Some(max_lines) = max_lines {
+                if line_count > max_lines { break; }
+            }
+
+            let line = LogLine::from_journal_entry(&entry, timestamp);
+
+            // blocking_send transfers the data to the async side. 
+            // If the receiver is closed (user refreshed), this returns an error.
+            if tx.blocking_send(line).is_err() {
+                break; 
+            }
+            line_count += 1;
         }
         Ok(())
     }

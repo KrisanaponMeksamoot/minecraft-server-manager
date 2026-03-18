@@ -247,9 +247,41 @@ pub async fn handle_server_console_socket(socket: WebSocket, state: State<Arc<Ap
                     let jb_clone = jb.clone();
                     let since = inmsg.index("since").as_u64().unwrap_or_default();
                     let until = inmsg.get("until").and_then(|v| v.as_u64());
+                    let max_lines = inmsg.get("max_lines").and_then(|v| v.as_u64());
 
                     tokio::task::spawn_blocking(move || {
-                        if let Err(e) = jb_clone.get_logs_to(since, until, log_tx) {
+                        if let Err(e) = jb_clone.get_logs_to(since, until, max_lines, log_tx) {
+                            eprintln!("Log streaming error: {}", e);
+                        }
+                    });
+
+                    while let Some(logline) = log_rx.recv().await {
+                        let msg = json!({
+                            "type": "log",
+                            "message": logline.message,
+                            "timestamp": logline.timestamp,
+                            "comm": logline.command,
+                            "pid": logline.pid
+                        });
+
+                        if let Ok(serialized) = serde_json::to_string(&msg) {
+                            let mut guard = sender.lock().await;
+                            if guard.send(Message::Text(serialized.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                },
+                Some("get_rlogs") => {
+                    let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(100);
+
+                    let jb_clone = jb.clone();
+                    let since = inmsg.get("since").and_then(|v| v.as_u64());
+                    let until = inmsg.index("until").as_u64().unwrap_or_default();
+                    let max_lines = inmsg.get("max_lines").and_then(|v| v.as_u64());
+
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = jb_clone.get_rlogs_to(since, until, max_lines, log_tx) {
                             eprintln!("Log streaming error: {}", e);
                         }
                     });
