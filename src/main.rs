@@ -38,6 +38,9 @@ async fn main() {
         .route("/servers", get(handlers::list_servers))
         .route("/server/{id}/status", get(handlers::get_server_status))
         .route("/server/{id}/console", get(handlers::handle_server_console))
+        .route("/server/{id}/log", get(handlers::get_server_log))
+        .route("/server/{id}/rlog", get(handlers::get_server_rlog))
+        .route("/server/{id}/cmd", get(handlers::handle_server_command))
         .route("/server/{id}/{action}", get(handlers::handle_server_action))
         .with_state(app_state.clone());
 

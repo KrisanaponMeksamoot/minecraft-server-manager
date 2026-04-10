@@ -4,7 +4,7 @@ use futures_util::{SinkExt, StreamExt};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, Pid, ProcessRefreshKind, RefreshKind, System};
 
 use axum::{
-    Json, extract::{Path, State, ws::{Message, WebSocket, WebSocketUpgrade}},
+    Json, extract::{Path, Query, State, ws::{Message, WebSocket, WebSocketUpgrade}},
     http::StatusCode,
     response::{IntoResponse, Response}
 };
@@ -100,8 +100,8 @@ pub async fn list_servers(state: State<Arc<AppState>>) -> Result<Json<Value>, Ap
     Ok(Json(Value::Array(servers)))
 }
 
-pub async fn get_server_status(id: Path<String>, state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
-    let unit = state.mcsv_mgr.lock().await.get_server_unit_status(&id.0).await?;
+pub async fn get_server_status(Path(id): Path<String>, state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    let unit = state.mcsv_mgr.lock().await.get_server_unit_status(&id).await?;
 
     let unit = if let Some(unit) = unit { unit } else { return Err(AppError::Api(ApiError::NotFound)); };
 
@@ -114,7 +114,95 @@ pub async fn get_server_status(id: Path<String>, state: State<Arc<AppState>>) ->
         "sub_state": unit.sub_state
     });
 
+    let proc = state.mcsv_mgr.lock().await.get_server_process(&id).await;
+    
+    if let Ok(Some(proc)) = proc {
+        *res.index_mut("stat") = json!({
+            "pid": proc.pid
+        });
+        let mut system = System::new_with_specifics(RefreshKind::nothing()
+                .with_processes(ProcessRefreshKind::everything()));
+        system.refresh_all();
+        if let Some(proc) = system.process(Pid::from_u32(proc.pid)) {
+            let stat = res.index_mut("stat");
+            *stat.index_mut("name") = Value::String(proc.name().to_string_lossy().into_owned());
+            *stat.index_mut("cpu_usage") = json!(proc.cpu_usage());
+            *stat.index_mut("memory") = json!(proc.memory());
+            *stat.index_mut("start_time") = json!(proc.start_time());
+            *stat.index_mut("run_time") = json!(proc.run_time());
+        }
+    }
+
     Ok(res)
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct LogQueryParam {
+    pub since: u64,
+    pub until: Option<u64>,
+    pub max_lines: Option<u64>
+}
+
+pub async fn get_server_log(
+    Path(id): Path<String>,
+    Query(param): Query<LogQueryParam>,
+    state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    let jb = {
+        let mcsv_mgr = state.mcsv_mgr.lock().await;
+        let lb = mcsv_mgr.log_broadcasters.get(&id);
+        if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(ApiError::NotFound)); }
+    };
+
+    Ok(Json(Value::Array(jb.get_logs(param.since, param.until, param.max_lines)?
+        .iter().map(|logline| json!({
+            "message": logline.message,
+            "timestamp": logline.timestamp,
+            "comm": logline.command,
+            "pid": logline.pid
+        })).collect())))
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct RlogQueryParam {
+    pub since: Option<u64>,
+    pub until: u64,
+    pub max_lines: Option<u64>
+}
+
+pub async fn get_server_rlog(
+    Path(id): Path<String>,
+    Query(param): Query<RlogQueryParam>,
+    state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    let jb = {
+        let mcsv_mgr = state.mcsv_mgr.lock().await;
+        let lb = mcsv_mgr.log_broadcasters.get(&id);
+        if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(ApiError::NotFound)); }
+    };
+
+    Ok(Json(Value::Array(jb.get_rlogs(param.since, param.until, param.max_lines)?
+        .iter().map(|logline| json!({
+            "message": logline.message,
+            "timestamp": logline.timestamp,
+            "comm": logline.command,
+            "pid": logline.pid
+        })).collect())))
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct CommandQueryParam {
+    pub cmd: String
+}
+
+pub async fn handle_server_command(
+    Path(id): Path<String>,
+    Query(param): Query<CommandQueryParam>,
+    state: State<Arc<AppState>>) -> Result<(), AppError> {
+    
+    let cmd = param.cmd;
+    println!("Received command for {}: {}", id, cmd);
+    let cmd = if !cmd.ends_with('\n') { cmd.to_string() + "\n" } else { cmd.to_string() };
+    
+    Ok(state.mcsv_mgr.lock().await.inject_command(&id, &cmd).await?)
 }
 
 pub async fn handle_server_action(

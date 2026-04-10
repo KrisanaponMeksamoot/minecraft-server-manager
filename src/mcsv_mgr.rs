@@ -79,7 +79,7 @@ impl JournalBroadcaster {
         Arc::new(Self { unit_name,  name, tx: c_tx, handle })
     }
 
-    pub fn get_logs(self: &Self, since: u64, until: Option<u64>) -> Result<Vec<LogLine>, std::io::Error> {
+    pub fn get_logs(self: &Self, since: u64, until: Option<u64>, max_lines: Option<u64>) -> Result<Vec<LogLine>, std::io::Error> {
         let mut j = OpenOptions::default()
                 .system(true)
                 .local_only(true)
@@ -88,8 +88,16 @@ impl JournalBroadcaster {
         j.seek_realtime_usec(since)?;
         let mut out = Vec::new();
         while let Some(entry) = j.next_entry()? {
+            let timestamp = j.timestamp_usec()?;
+
+            if let Some(until) = until {
+                if timestamp > until { break; }
+            }
+            if let Some(max_lines) = max_lines {
+                if out.len() as u64 > max_lines { break; }
+            }
+
             let line = LogLine::from_journal_entry(&entry, j.timestamp_usec()?);
-            if let Some(until) = until && line.timestamp > until { break; }
             out.push(line);
         };
         Ok(out)
@@ -127,6 +135,31 @@ impl JournalBroadcaster {
             line_count += 1;
         }
         Ok(())
+    }
+
+
+    pub fn get_rlogs(self: &Self, since: Option<u64>, until: u64, max_lines: Option<u64>,) -> Result<Vec<LogLine>, std::io::Error> {
+        let mut j = OpenOptions::default()
+                .system(true)
+                .local_only(true)
+                .open()?;
+        j.match_add("_SYSTEMD_UNIT", self.unit_name.clone())?;
+        j.seek_realtime_usec(until)?;
+        let mut out = Vec::new();
+        while let Some(entry) = j.previous_entry()? {
+            let timestamp = j.timestamp_usec()?;
+
+            if let Some(since) = since {
+                if timestamp < since { break; }
+            }
+            if let Some(max_lines) = max_lines {
+                if out.len() as u64 > max_lines { break; }
+            }
+
+            let line: LogLine = LogLine::from_journal_entry(&entry, j.timestamp_usec()?);
+            out.push(line);
+        };
+        Ok(out)
     }
 
     pub fn get_rlogs_to(
