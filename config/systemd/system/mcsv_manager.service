@@ -1,0 +1,33 @@
+[Unit]
+Description=Minecraft Server Manager daemon
+Requires=mcsv_manager.socket
+After=network.target
+
+[Service]
+User=mcsv-mgr
+Group=mcsv-mgr
+
+ExecStart=/usr/local/bin/mcsv_manager
+Restart=on-failure
+
+ExecReload=/bin/kill -HUP $MAINPID
+
+StandardOutput=journal
+StandardError=journal
+
+# socket activation
+StandardInput=socket
+NonBlocking=true
+
+# hardening (safe defaults)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadOnlyPaths=/usr/local
+ProtectHome=true
+ReadWritePaths=/run
+# CapabilityBoundingSet=
+# AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

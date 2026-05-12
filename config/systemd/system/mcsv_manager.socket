@@ -1,0 +1,11 @@
+[Unit]
+Description=Minecraft Server Manager API socket
+
+[Socket]
+ListenStream=/run/mcsv_manager.sock
+SocketUser=mcsv-mgr
+SocketGroup=mcsv-mgr
+SocketMode=0660
+
+[Install]
+WantedBy=sockets.target

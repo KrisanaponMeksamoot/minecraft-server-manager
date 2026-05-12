@@ -19,8 +19,10 @@ Basic setup
 - setup user & group for safety
 - install apache config file, systemd service and socket
 ```bash
-sudo bash setup.sh
+sudo bash scripts/setup.sh
 ```
+
+Minecraft server service template is at [config/systemd/system/minecraft@template.service](config/systemd/system/minecraft@template.service)
 
 \* Further Setup is your own responsibility including instances, Minecraft servers and API.
 
